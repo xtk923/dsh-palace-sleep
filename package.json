@@ -1,0 +1,37 @@
+{
+  "name": "dsh-palace-sleep",
+  "version": "0.1.0",
+  "description": "Read-only sleep/consolidation layer beside a MemPalace store: salience scoring, a recall ledger, and a one-line digest injected as DSH runtime context. Never writes to MemPalace, never forks it.",
+  "type": "module",
+  "license": "MIT",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "python",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/ && python test/test_palace_sleep.py"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis-plugin",
+    "mempalace",
+    "memory",
+    "consolidation"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
