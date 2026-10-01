@@ -82,7 +82,7 @@ In [cordis.patch.yml](cordis.patch.yml) or a profile override:
 ```yaml
 - id: palace-sleep
   config:
-    palaceDb: '~/KnowledgeBase/mempalace_kb/chroma.sqlite3'
+    palaceDb: '~/KnowledgeBase/mempalace_kb/chroma.sqlite3'   # 你自己的 MemPalace 库
     home: '~/.dsh/palace-sleep'
     injectMode: line            # line | full | off
     scanIntervalMinutes: 720    # 12 h; 0 disables the timer
