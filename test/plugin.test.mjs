@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { apply, createDigestReader, lastJson, resolveConfig } from '../src/index.js';
+import { apply, createDigestReader, lastJson, parseSearch, resolveConfig } from '../src/index.js';
 
 function fakeContext() {
 	const tools = new Map();
@@ -175,6 +175,54 @@ test('palace_recall refuses an empty query', async () => {
 		const { ctx, tools } = fakeContext();
 		apply(ctx, { home, injectMode: 'off', scanOnStart: false, scanIntervalMinutes: 0 });
 		await assert.rejects(() => tools.get('palace_recall').execute({ query: '   ' }), /non-empty query/);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
+
+test('an error-shaped MemPalace payload is a failure, not an empty result', () => {
+	// Exactly what the live store returned: a 200-ish object carrying `error`.
+	const failed = parseSearch(
+		JSON.stringify({ error: 'Search error: Error executing plan: Internal error: Error finding id' }) + '\n',
+		0,
+		''
+	);
+	assert.equal(failed.rows.length, 0);
+	assert.equal(failed.top, null);
+	assert.match(failed.error, /Error finding id/);
+
+	const ok = parseSearch(
+		JSON.stringify({ query: 'q', results: [{ source_file: 'a.md', similarity: 0.42 }] }),
+		0,
+		''
+	);
+	assert.equal(ok.rows.length, 1);
+	assert.equal(ok.top, 0.42);
+	assert.equal(ok.error, undefined);
+
+	const crashed = parseSearch('', 1, 'boom');
+	assert.match(crashed.error, /exit 1/);
+	assert.equal(crashed.top, null);
+});
+
+test('palace_recall omits a similarity it does not have instead of nulling it', async () => {
+	const home = mkdtempSync(join(tmpdir(), 'palace-sleep-'));
+	try {
+		const { ctx, tools } = fakeContext();
+		// A memplc that always fails: the tool must still return a schema-valid
+		// value, and must say why.
+		apply(ctx, {
+			home,
+			injectMode: 'off',
+			scanOnStart: false,
+			scanIntervalMinutes: 0,
+			memplc: process.execPath,
+			timeoutMs: 8_000
+		});
+		const value = await tools.get('palace_recall').execute({ query: 'anything', limit: 2 });
+		assert.equal(value.rows, 0);
+		assert.equal('topSimilarity' in value, false, 'a missing similarity must be absent, not null');
+		assert.equal(typeof value.error, 'string');
 	} finally {
 		rmSync(home, { recursive: true, force: true });
 	}

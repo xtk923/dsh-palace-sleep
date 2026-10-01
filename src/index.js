@@ -173,6 +173,29 @@ export function createDigestReader(config) {
 	};
 }
 
+/**
+ * Read one MemPalace search answer.
+ *
+ * MemPalace reports its own failures as `{"error": "..."}` on stdout, so a
+ * successful parse is NOT a successful search. The first version conflated the
+ * two: a broken search came back as "0 rows", `topSimilarity` became null, and
+ * output validation rejected it — a real retrieval failure wearing the costume
+ * of a schema bug. Hence a pure, testable classifier.
+ */
+export function parseSearch(stdout, code, stderr) {
+	const parsed = lastJson(stdout);
+	const rows = Array.isArray(parsed?.results) ? parsed.results : [];
+	const sources = rows.map((row) => String(row?.source_file ?? '')).filter(Boolean);
+	const similarities = rows.map((row) => Number(row?.similarity)).filter((value) => Number.isFinite(value));
+	const top = similarities.length ? Math.max(...similarities) : null;
+	const failure = !parsed
+		? `memplc exit ${code}: ${String(stderr ?? '').slice(-300).trim()}`
+		: typeof parsed.error === 'string'
+			? parsed.error
+			: undefined;
+	return { parsed, rows, sources, similarities, top, error: failure };
+}
+
 function install(ctx, config) {
 	const disposers = [];
 	const digest = createDigestReader(config);
@@ -215,14 +238,10 @@ function install(ctx, config) {
 		const result = await run(config.memplc, ['search', query, '--limit', String(limit)], {
 			timeoutMs: config.timeoutMs
 		});
-		const parsed = lastJson(result.stdout);
-		const rows = Array.isArray(parsed?.results) ? parsed.results : [];
-		const sources = rows.map((row) => String(row?.source_file ?? '')).filter(Boolean);
-		const similarities = rows.map((row) => Number(row?.similarity)).filter((value) => Number.isFinite(value));
-		const top = similarities.length ? Math.max(...similarities) : null;
+		const answer = parseSearch(result.stdout, result.code, result.stderr);
 		const noteText = [
-			parsed ? `top_similarity=${top ?? 'n/a'}` : `memplc failed (exit ${result.code})`,
-			rows.length ? `${rows.length} rows` : '',
+			answer.error ? `FAILED: ${answer.error}` : `top_similarity=${answer.top ?? 'n/a'}`,
+			answer.rows.length ? `${answer.rows.length} rows` : '',
 			note ?? ''
 		]
 			.filter(Boolean)
@@ -237,16 +256,16 @@ function install(ctx, config) {
 			'--tool',
 			'palace_recall',
 			'--returned',
-			String(rows.length),
+			String(answer.rows.length),
 			'--hits',
-			String(rows.length),
+			String(answer.rows.length),
 			'--ids',
-			sources.join(','),
+			answer.sources.join(','),
 			'--note',
 			noteText
 		]).catch(() => undefined);
 
-		return { query, parsed, rows, sources, similarities, top, error: parsed ? undefined : result.stderr.slice(-400) };
+		return { query, ...answer };
 	}
 
 	// --- tools ---------------------------------------------------------------
@@ -356,7 +375,9 @@ function install(ctx, config) {
 				return {
 					query: result.query,
 					rows: result.rows.length,
-					topSimilarity: result.top,
+					// Omitted rather than nulled: the declared schema says number,
+					// and the registry validates what a tool returns.
+					...(Number.isFinite(result.top) ? { topSimilarity: result.top } : {}),
 					sources: result.sources,
 					...(result.error ? { error: result.error } : {})
 				};
