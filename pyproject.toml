@@ -1,0 +1,33 @@
+# Packaging for the two Python entry points.
+#
+# The modules live in `python/` rather than a package directory because
+# `src/index.js` spawns them by path (`python/palace_sleep.py`), which keeps the
+# plugin's helper runnable straight from a checkout. `package-dir` keeps that
+# layout while still installing importable modules for the `palace-cli` console
+# script.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dsh-palace-sleep"
+version = "0.1.0"
+description = "Read-only sleep/consolidation layer beside a MemPalace store, plus the writable palace-cli companion."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+# Nothing is required at runtime: the read-only sidecar is stdlib sqlite3, and
+# recall shells out to the `memplc` executable rather than importing MemPalace.
+dependencies = []
+
+[project.optional-dependencies]
+# Only needed to *run* MemPalace itself. The CLI shells out to memplc, so a
+# pure scan/digest deployment does not need these.
+mempalace = ["mempalace>=3.3.5"]
+
+[project.scripts]
+palace-cli = "palace_cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "python" }
+py-modules = ["palace_sleep", "palace_cli"]

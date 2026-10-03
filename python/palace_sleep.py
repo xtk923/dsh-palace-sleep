@@ -144,10 +144,51 @@ create index if not exists idx_scores_score on drawer_scores(score desc);
 create index if not exists idx_recall_drawer on recall_ledger(drawer_ids);
 """
 
+# Table counts for `status`. Written as one literal statement per table rather
+# than a table name interpolated into the query text: the names are internal
+# constants, but a statement built by interpolation is the shape that turns into
+# an injection the day someone feeds it a variable.
+SIDECAR_COUNTS = (
+    ("drawer_scores", "select count(*) from drawer_scores"),
+    ("runs", "select count(*) from runs"),
+    ("digest_snapshots", "select count(*) from digest_snapshots"),
+    ("recall_ledger", "select count(*) from recall_ledger"),
+    ("archive_marks", "select count(*) from archive_marks"),
+)
+
 
 # ------------------------------------------------------------------ utils ---
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def extract_json(text: str):
+    """The last complete JSON object in `text`, or None.
+
+    Scans for a balanced top-level object rather than trying line by line,
+    because the payload is not always on one line: `memplc` is an in-process
+    MemPalace wrapper and pretty-prints its results with `indent=2`. A
+    line-oriented parser reports that as "no JSON", which then reads as an empty
+    search — the exact confusion between a failure and an empty result that this
+    project already had to fix once.
+    """
+    if not text:
+        return None
+    decoder = json.JSONDecoder()
+    found = None
+    index = 0
+    while True:
+        start = text.find("{", index)
+        if start < 0:
+            return found
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except ValueError:
+            index = start + 1
+            continue
+        if isinstance(value, dict):
+            found = value
+        index = end if end > start else start + 1
 
 
 def parse_time(value):
@@ -551,9 +592,9 @@ def cmd_status(args) -> int:
     out = {"home": str(home), "sidecar": str(db), "exists": db.exists()}
     if db.exists():
         con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
-        for table in ("drawer_scores", "runs", "digest_snapshots", "recall_ledger", "archive_marks"):
+        for table, statement in SIDECAR_COUNTS:
             try:
-                out[table] = con.execute(f"select count(*) from {table}").fetchone()[0]
+                out[table] = con.execute(statement).fetchone()[0]
             except sqlite3.Error as exc:
                 out[table] = f"error: {exc}"
         row = con.execute("select finished_at, drawers, mean_score, noise, unresolved from runs order by id desc limit 1").fetchone()

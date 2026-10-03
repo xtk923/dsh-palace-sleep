@@ -67,6 +67,23 @@ test('lastJson picks the final JSON line out of noisy output', () => {
 	assert.equal(lastJson('nothing here'), undefined);
 });
 
+test('lastJson reads a pretty-printed payload, not just a single line', () => {
+	// `memplc` prints with indent=2, so the old line-oriented reader saw no JSON
+	// at all and every recall was recorded as zero rows.
+	const pretty = JSON.stringify({ query: 'q', results: [{ source_file: 'a.md', similarity: 0 }] }, null, 2);
+	assert.deepEqual(lastJson(pretty), { query: 'q', results: [{ source_file: 'a.md', similarity: 0 }] });
+
+	// Braces and quotes inside string values must not end the object early.
+	const tricky = '{"text": "a } b { c \\" d", "n": 2}';
+	assert.deepEqual(lastJson(tricky), { text: 'a } b { c " d', n: 2 });
+
+	assert.deepEqual(lastJson('{"a":1}\n{"b":2}'), { b: 2 }, 'the last object wins');
+	assert.equal(lastJson('{"a": 1'), undefined, 'an unterminated object yields nothing');
+	assert.equal(lastJson(''), undefined);
+	assert.deepEqual(lastJson('{oops}\n{"a":1}'), { a: 1 }, 'a broken object must not hide a good one');
+	assert.deepEqual(lastJson('{"a":{"b":{"c":1}},"d":2}'), { a: { b: { c: 1 } }, d: 2 });
+});
+
 test('the digest reader caches on mtime and reports age', () => {
 	const home = mkdtempSync(join(tmpdir(), 'palace-sleep-'));
 	try {

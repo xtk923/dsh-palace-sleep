@@ -15,10 +15,14 @@ and nothing here patches the installed package.
 │  drawer_scores · recall_ledger · archive_marks ·         │
 │  digest_snapshots · runs                                 │
 └───────────────┬─────────────────────────────────────────┘
-                │
-┌─ reader ──────┴─────────────────────────────────────────┐
-│  python/palace_sleep.py — SQLite `mode=ro`, always       │
-└──────────────────────────────────────────────────────────┘
+                │                        ▲
+┌─ reader ──────┴──────────────────────┐ │ ┌─ palace-cli ──────────────┐
+│  python/palace_sleep.py — SQLite     │ └─┤  python/palace_cli.py     │
+│  `mode=ro`, always                   │   │  runs in YOUR terminal:   │
+└──────────────────────────────────────┘   │  writable, so it is the   │
+                                           │  only writer of a real    │
+                                           │  recall to the ledger     │
+                                           └───────────────────────────┘
 ```
 
 ## The two guarantees
@@ -72,8 +76,56 @@ The full digest is always available through `palace_sleep_digest`.
 |---|---|
 | `palace_sleep_scan` | Re-read the palace (read-only), rescore, rebuild the digest. Writes only to the sidecar. |
 | `palace_sleep_digest` | The full digest: statistics, highest-salience memories, unresolved items, open problems. |
-| `palace_recall` | Search MemPalace **and record the query in the recall ledger**. Reports the top similarity, because near-zero similarity means retrieval returned unrelated memories. Prefer this over calling `memplc` directly. |
+| `palace_recall` | Search MemPalace and report the top similarity. **Records nothing** — see below. |
 | `palace_sleep_status` | Sidecar state, digest age, and exactly what the runtime context is contributing right now. |
+
+## The ledger needs a terminal, so `palace-cli` exists
+
+The recall ledger is the one thing no memory system tracks: *was this memory
+ever actually used?* But a runtime context block is assembled inside a confined
+session, and **a confined session cannot write the palace.** ChromaDB validates
+its tenant and database on open, so it writes even for a pure search; when the
+palace sits outside the session workspace, that write is denied:
+
+```
+chromadb.errors.InternalError: error returned from database:
+  (code: 8) attempt to write a readonly database
+```
+
+Measured on Windows 2026-10-03, confined, with the link checked in both
+directions:
+
+| Confined operation | Result |
+|---|---|
+| write through a link inside the workspace → target **inside** | allowed |
+| write through a link inside the workspace → target **outside** | denied |
+| write direct to that outside target | denied |
+| create a link to an outside target | denied |
+| read through a link to an outside target | allowed |
+
+and the same results when the link was created *unconfined*. **The sandbox
+resolves a link to its real target**, so no symlink or junction makes an outside
+palace writable from inside a session. That is why `palace_recall` reports a
+failure but does not log one: nine such rows once filled the ledger with noise
+and buried the question it exists to answer.
+
+`python/palace_cli.py` is the writable client. Run it from your own terminal,
+where there is no confinement:
+
+```bash
+palace-cli doctor                       # can this palace be written, and if not, why
+palace-cli status                       # sidecar + palace + how many recalls ever succeeded
+palace-cli link                         # stable path to the palace at <home>/palace
+palace-cli recall "what did I decide"   # search, print hits, record the recall
+palace-cli sync                         # re-scan through the link, rebuild the digest
+palace-cli mirror --source <palace>     # copy a palace in for confined analysis
+```
+
+`doctor` asks the question by *attempting* it rather than guessing from the path,
+because the same palace is writable from your terminal and not from a session.
+`link` is a convenience path for you and other tools — it does not, and cannot,
+widen the sandbox. `mirror` copies bytes rather than linking, because a confined
+reader needs the bytes to live inside a workspace.
 
 ## Configuration
 
@@ -93,6 +145,10 @@ In [cordis.patch.yml](cordis.patch.yml) or a profile override:
     memplc: memplc
 ```
 
+The CLI takes the same two paths as flags, so it needs no config file of its
+own — `--palace-db` (a `chroma.sqlite3` or the palace directory; both are
+accepted) and `--home` (the sidecar). It defaults to exactly the values above.
+
 The scoring rubric is **not** in the code path you'd have to edit: the first run
 writes `~/.dsh/palace-sleep/policy.json`, and every weight, saturation scale and
 threshold is read from there.
@@ -107,6 +163,36 @@ then add `dsh-palace-sleep` to `dsh.profile.bundles` — `plugin_manager
 install_bundle` performs both steps. Requires Python 3.9+ on `PATH` (MemPalace
 itself is Python, so it already is).
 
+The CLI needs no installation to be useful. From a Windows checkout:
+
+```bat
+palace-cli.cmd doctor
+```
+
+or anywhere, without the wrapper:
+
+```bash
+python python/palace_cli.py doctor
+```
+
+To get `palace-cli` on `PATH` for every shell:
+
+```bash
+pip install -e .        # provides the palace-cli console script
+```
+
+`doctor` needs no arguments in the normal case. It reads the DSH profile that
+already points this plugin at a palace, so you do not have to repeat the path —
+and it says out loud which candidate it used, because silently answering about
+a different palace than you asked about is worse than saying nothing:
+
+```
+[--] nothing at C:\Users\you\KnowledgeBase\...; using this one because
+     the DSH profile names it (C:\Workspace\KnowledgeBase\...)
+```
+
+Pass `--no-discover` to disable that, or `--palace-db` to pin the path.
+
 ## The observation phase
 
 This version deliberately does **not** write anything back to MemPalace. The
@@ -120,12 +206,22 @@ building at all:
 
 Only then is write-back, merging, or archiving worth building.
 
+The third question is the one to be careful with: a `similarity` of `0.0` is not
+proof that retrieval failed. MemPalace clamps it, and a query whose distances
+all exceed 1.0 reports `0.0` while still returning the nearest drawers. Read the
+results, not just the number.
+
 ## Tests
 
 ```bash
-node --test test/          # plugin surface, config, digest reading, injection
+node test/plugin.test.mjs          # plugin surface, config, digest, JSON payloads
 python test/test_palace_sleep.py   # scoring, sidecar, read-only proof
+python test/test_palace_cli.py     # links, writability probe, recall parsing
 ```
+
+`node --test test/` also works where the test runner is allowed to spawn. Each
+Python file is a plain script and runs directly; the CLI tests build a throwaway
+palace under the repository rather than touching a live one.
 
 Note: `files` in `package.json` keeps `test/` out of the installed artifact —
 the tests live in the repository checkout.

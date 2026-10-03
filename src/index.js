@@ -117,17 +117,68 @@ function run(command, args, { timeoutMs, env = {} }) {
 	});
 }
 
-/** The last JSON object printed by a helper, or undefined. */
+/**
+ * The last complete JSON object printed by a helper, or undefined.
+ *
+ * Balanced-brace scan, not a line scan: `memplc` is an in-process MemPalace
+ * wrapper and pretty-prints with `indent=2`, so a search answer spans many
+ * lines. The line-oriented version reported that as "no JSON" and every recall
+ * was recorded as zero rows — a failure wearing the costume of an empty result.
+ */
 export function lastJson(text) {
-	const lines = String(text ?? '').split(/\r?\n/).filter((line) => line.trim().startsWith('{'));
-	for (let index = lines.length - 1; index >= 0; index -= 1) {
-		try {
-			return JSON.parse(lines[index]);
-		} catch {
-			/* keep looking */
+	const input = String(text ?? '');
+	const decoder = new JSONDecoder(input);
+	let found;
+	for (let index = 0; index < input.length; index += 1) {
+		if (input[index] !== '{') continue;
+		const value = decoder.decode(index);
+		if (value !== undefined) {
+			found = value;
+			index = decoder.end - 1;
 		}
 	}
-	return undefined;
+	return found;
+}
+
+/** Minimal balanced-object reader over a string, string-escape aware. */
+class JSONDecoder {
+	constructor(input) {
+		this.input = input;
+		this.end = 0;
+	}
+
+	decode(start) {
+		let depth = 0;
+		let inString = false;
+		let escaped = false;
+		for (let index = start; index < this.input.length; index += 1) {
+			const char = this.input[index];
+			if (inString) {
+				if (escaped) escaped = false;
+				else if (char === '\\') escaped = true;
+				else if (char === '"') inString = false;
+				continue;
+			}
+			if (char === '"') inString = true;
+			else if (char === '{') depth += 1;
+			else if (char === '}') {
+				depth -= 1;
+				if (depth === 0) {
+					try {
+						const value = JSON.parse(this.input.slice(start, index + 1));
+						if (value && typeof value === 'object') {
+							this.end = index + 1;
+							return value;
+						}
+						return undefined;
+					} catch {
+						return undefined;
+					}
+				}
+			}
+		}
+		return undefined;
+	}
 }
 
 function objectSchema(properties, required = []) {
@@ -239,31 +290,36 @@ function install(ctx, config) {
 			timeoutMs: config.timeoutMs
 		});
 		const answer = parseSearch(result.stdout, result.code, result.stderr);
-		const noteText = [
-			answer.error ? `FAILED: ${answer.error}` : `top_similarity=${answer.top ?? 'n/a'}`,
-			answer.rows.length ? `${answer.rows.length} rows` : '',
-			note ?? ''
-		]
-			.filter(Boolean)
-			.join(' ');
 
-		// The ledger is the point: it records what was asked and what came back,
-		// which is the only way "was this memory ever useful?" becomes answerable.
-		void python([
-			'recall',
-			'--query',
-			query,
-			'--tool',
-			'palace_recall',
-			'--returned',
-			String(answer.rows.length),
-			'--hits',
-			String(answer.rows.length),
-			'--ids',
-			answer.sources.join(','),
-			'--note',
-			noteText
-		]).catch(() => undefined);
+		// Only a recall that actually reached MemPalace is recorded.
+		//
+		// A confined session cannot write the palace: ChromaDB validates its
+		// tenant/database on open, and the palace normally lives outside the
+		// session workspace, so `memplc` fails here every single time. Those
+		// failures are still reported to the caller below, but they are NOT
+		// ledger entries — nine of them once filled the ledger with noise and
+		// buried the one question it exists to answer. The ledger stays a record
+		// of real retrievals, written by python/palace_cli.py from an
+		// unrestricted terminal.
+		if (!answer.error) {
+			void python([
+				'recall',
+				'--query',
+				query,
+				'--tool',
+				'palace_recall',
+				'--returned',
+				String(answer.rows.length),
+				'--hits',
+				String(answer.rows.length),
+				'--ids',
+				answer.sources.join(','),
+				'--note',
+				[`top_similarity=${answer.top ?? 'n/a'}`, `${answer.rows.length} rows`, note ?? '']
+					.filter(Boolean)
+					.join(' ')
+			]).catch(() => undefined);
+		}
 
 		return { query, ...answer };
 	}
